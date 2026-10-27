@@ -10,7 +10,9 @@ store.load();
 auth.seedAdmin();
 
 const app = express();
-const PORT = Number(process.env.PORT) || 3000;
+// Botkeep не пробрасывает PORT в контейнер: приложение обязано слушать выданный
+// серверу порт (Overview → Port). Сменился порт — править значение здесь или в Startup.
+const PORT = Number(process.env.PORT) || Number(process.env.SERVER_PORT) || 34086;
 const HOST = process.env.HOST || '0.0.0.0';
 const BASE_PATH = (process.env.BASE_PATH || '').replace(/\/+$/, '');
 
