@@ -1,0 +1,17 @@
+{
+  "name": "video-board",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Video board: nicknames, embedded video plates, search, suggestions, chat, comments, admin panel",
+  "main": "server.js",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2"
+  }
+}
