@@ -42,13 +42,15 @@ function save() {
 }
 
 function load() {
+  let parsed = null;
   try {
-    db = Object.assign(empty(), JSON.parse(fs.readFileSync(FILE, 'utf8')));
+    parsed = JSON.parse(fs.readFileSync(FILE, 'utf8'));
   } catch (err) {
     if (err.code !== 'ENOENT') console.error('[db] corrupt or unreadable, resetting:', err.message);
-    db = empty();
-    saveSync();
   }
+  // мутом объект на месте: наружные модуля держат на него ссылку из module.exports
+  Object.assign(db, empty(), parsed || {});
+  if (!parsed) saveSync();
 }
 
 const byId = (rows, id) => rows.find((r) => r.id === id);
@@ -56,6 +58,7 @@ const byId = (rows, id) => rows.find((r) => r.id === id);
 module.exports = {
   load,
   save,
+  saveSync,
   db,
   uid,
   byId,
