@@ -1,5 +1,8 @@
 const path = require('node:path');
 const express = require('express');
+
+require('./src/env.js').load(); // до остальных модулей: они читают process.env при загрузке
+
 const store = require('./src/db');
 const auth = require('./src/auth');
 const api = require('./src/api');
