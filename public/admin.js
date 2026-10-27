@@ -29,14 +29,24 @@ function row(actions) {
 }
 const btn = (label, kind = 'ghost') => `<button class="btn ${kind}">${label}</button>`;
 
+const reasonOptions = (sel) =>
+  Object.entries(data.reasons || {})
+    .map(([key, r]) => `<option value="${esc(key)}"${key === sel ? ' selected' : ''}>${esc(r.label)}</option>`)
+    .join('');
+
 function renderNicknames() {
   $('#admin-nicknames').innerHTML = data.nicknames
     .map(
       (n) => `
-    <div class="arow" data-id="${esc(n.id)}">
-      <input class="name" value="${esc(n.name)}" maxlength="32">
-      <input class="about" value="${esc(n.about || '')}" maxlength="160" placeholder="описание">
-      <span class="muted">${data.items.filter((i) => i.nicknameId === n.id).length} плашек</span>
+    <div class="arow wide" data-id="${esc(n.id)}">
+      <div class="cols">
+        <div class="row">
+          <input class="name" value="${esc(n.name)}" maxlength="32" placeholder="ник">
+          <input class="about" value="${esc(n.about || '')}" maxlength="160" placeholder="титул, напр. «Ультимативный обманщик»">
+        </div>
+        <input class="avatar" value="${esc(n.avatar || '')}" maxlength="300" placeholder="URL аватара">
+        <span class="muted">${data.items.filter((i) => i.nicknameId === n.id).length} плашек${n.hidden ? ' · <b>скрыт</b>' : ''}</span>
+      </div>
       <label class="chk"><input type="checkbox" class="hidden" ${n.hidden ? 'checked' : ''}> скрыт</label>
       ${row(`${btn('↑','ghost')}${btn('↓','ghost')}${btn('Сохранить')}${btn('Удалить','danger')}`)}
     </div>`
@@ -50,7 +60,13 @@ function renderNicknames() {
       api(`/admin/nicknames/${id}`, { method: 'PATCH', body: JSON.stringify(body) }).then(load).catch(alert);
     up.onclick = () => move(id, -1);
     down.onclick = () => move(id, 1);
-    saveBtn.onclick = () => patch({ name: $('.name', el).value, about: $('.about', el).value, hidden: $('.hidden', el).checked });
+    saveBtn.onclick = () =>
+      patch({
+        name: $('.name', el).value,
+        about: $('.about', el).value,
+        avatar: $('.avatar', el).value,
+        hidden: $('.hidden', el).checked,
+      });
     del.onclick = () => confirm('Удалить ник и все его плашки?') && api(`/admin/nicknames/${id}`, { method: 'DELETE' }).then(load).catch(alert);
   });
 }
@@ -68,6 +84,7 @@ async function move(id, dir) {
 function renderItems() {
   const select = $('#add-item select[name=nicknameId]');
   select.innerHTML = data.nicknames.map((n) => `<option value="${esc(n.id)}">${esc(n.name)}</option>`).join('');
+  if (!$('#admin-reasons').options.length) $('#admin-reasons').innerHTML = reasonOptions('sus');
 
   $('#admin-items').innerHTML = data.items
     .map(
@@ -75,10 +92,14 @@ function renderItems() {
     <div class="arow wide" data-id="${esc(i.id)}">
       <div class="thumb">${i.player?.poster ? `<img src="${esc(i.player.poster)}" alt="">` : `<span class="muted">${esc(i.provider)}</span>`}</div>
       <div class="cols">
-        <input class="title" value="${esc(i.title)}" maxlength="120">
-        <input class="url" value="${esc(i.url)}" maxlength="300">
+        <div class="row">
+          <input class="title" value="${esc(i.title)}" maxlength="120" placeholder="название дела">
+          <select class="reason">${reasonOptions(i.reason)}</select>
+        </div>
+        <input class="url" value="${esc(i.url)}" maxlength="300" placeholder="ссылка на доказательство">
+        <input class="description" value="${esc(i.description || '')}" maxlength="500" placeholder="что произошло">
         <input class="tags" value="${esc((i.tags || []).join(', '))}" placeholder="теги через запятую" maxlength="120">
-        <span class="muted">${esc(i.nickname || '—')} · ${esc(i.provider)}${i.hidden ? ' · <b>скрыта</b>' : ''}</span>
+        <span class="muted">${esc(i.nickname || '—')} · ${esc(i.provider)} · виновен ${i.guilty} / невиновен ${i.innocent} · ${esc(i.verdict)}${i.hidden ? ' · <b>скрыта</b>' : ''}</span>
       </div>
       ${row(`${btn('Сохранить')}${btn(i.hidden ? 'Показать' : 'Скрыть','ghost')}${btn('Удалить','danger')}`)}
     </div>`
@@ -92,7 +113,13 @@ function renderItems() {
     saveBtn.onclick = () =>
       api(`/admin/items/${id}`, {
         method: 'PATCH',
-        body: JSON.stringify({ title: $('.title', el).value, url: $('.url', el).value, tags: $('.tags', el).value }),
+        body: JSON.stringify({
+          title: $('.title', el).value,
+          url: $('.url', el).value,
+          tags: $('.tags', el).value,
+          reason: $('.reason', el).value,
+          description: $('.description', el).value,
+        }),
       })
         .then(load)
         .catch(alert);
@@ -110,7 +137,7 @@ function renderSubmissions() {
         (s) => `
     <div class="arow wide" data-id="${esc(s.id)}">
       <div class="cols">
-        <b>${esc(s.nickname)} — ${esc(s.title || 'без названия')} <span class="pill ${esc(s.status)}">${esc(s.status)}</span></b>
+        <b>${esc(s.nickname)} — ${esc(s.title || 'без названия')} <span class="pill ${esc(s.status)}">${esc(s.status)}</span>${s.reason ? ` <span class="pill">${esc((data.reasons[s.reason] || {}).label || s.reason)}</span>` : ''}</b>
         <a class="muted" href="${esc(s.url)}" target="_blank" rel="noopener nofollow">${esc(s.url)}</a>
         ${s.note ? `<p>${esc(s.note)}</p>` : ''}
         <span class="muted">${dt(s.createdAt)}</span>

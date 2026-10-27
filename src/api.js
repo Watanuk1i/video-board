@@ -1,13 +1,18 @@
 const express = require('express');
 const { db, uid, save, byId } = require('./db');
 const auth = require('./auth');
-const { resolve } = require('./video');
+const { resolve, safeUrl } = require('./video');
+const { REASONS, reason } = require('./reasons');
 const { broadcast, subscribe } = require('./events');
 
 const router = express.Router();
 
 const text = (v, max) => String(v ?? '').replace(/\s+/g, ' ').trim().slice(0, max);
 const multiline = (v, max) => String(v ?? '').replace(/\r\n/g, '\n').trim().slice(0, max);
+const imageUrl = (v) => {
+  const raw = text(v, 300);
+  return safeUrl(raw) ? raw : '';
+};
 const now = () => Date.now();
 
 function ip(req) {
@@ -41,17 +46,37 @@ function requireAdmin(req, res, next) {
 function publicItem(item, host) {
   const player = resolve(item.url, host);
   const nick = byId(db.nicknames, item.nicknameId);
+  const votes = item.votes || [];
+  const r = reason(item.reason);
   return {
     id: item.id,
     title: item.title,
     url: item.url,
+    reason: item.reason || 'sus',
+    reasonLabel: r.label,
+    ultimate: r.ultimate,
+    color: r.color,
+    description: item.description || '',
     tags: item.tags || [],
     provider: player.provider,
     player,
     nicknameId: item.nicknameId,
     nickname: nick ? nick.name : null,
+    avatar: nick ? nick.avatar || '' : '',
     createdAt: item.createdAt,
+    verdict: verdictOf(item),
+    guilty: votes.filter((v) => v.value === 'guilty').length,
+    innocent: votes.filter((v) => v.value === 'innocent').length,
   };
+}
+
+/** Итог по плашке: «виновен», когда голосов за позор больше и их минимум 3. */
+function verdictOf(item) {
+  const guilty = (item.votes || []).filter((v) => v.value === 'guilty').length;
+  const innocent = (item.votes || []).filter((v) => v.value === 'innocent').length;
+  if (guilty >= 3 && guilty > innocent) return 'guilty';
+  if (innocent >= 3 && innocent > guilty) return 'innocent';
+  return 'trial';
 }
 
 const visibleNicknames = () => db.nicknames.filter((n) => !n.hidden).sort((a, b) => (a.order - b.order) || a.name.localeCompare(b.name, 'ru'));
@@ -60,16 +85,42 @@ const visibleItems = () => db.items.filter((i) => !i.hidden);
 /* ------------------------------------------------------------------ public */
 
 router.get('/bootstrap', (req, res) => {
-  const counts = new Map();
-  for (const item of visibleItems()) counts.set(item.nicknameId, (counts.get(item.nicknameId) || 0) + 1);
-  res.json({
-    nicknames: visibleNicknames().map((n) => ({
+  const items = visibleItems().map((i) => publicItem(i, req.hostname));
+  const byNick = new Map();
+  for (const item of items) {
+    const row = byNick.get(item.nicknameId) || { count: 0, guilty: 0, weight: 0, reasons: new Map() };
+    row.count += 1;
+    row.guilty += item.verdict === 'guilty' ? 1 : 0;
+    row.weight += 2 + item.guilty;
+    row.reasons.set(item.reason, (row.reasons.get(item.reason) || 0) + 1);
+    byNick.set(item.nicknameId, row);
+  }
+  const players = visibleNicknames().map((n) => {
+    const stats = byNick.get(n.id) || { count: 0, guilty: 0, weight: 0, reasons: new Map() };
+    const top = [...stats.reasons.entries()].sort((a, b) => b[1] - a[1])[0];
+    return {
       id: n.id,
       name: n.name,
       about: n.about || '',
-      count: counts.get(n.id) || 0,
-    })),
-    totals: { nicknames: db.nicknames.length, items: db.items.length, comments: db.comments.length },
+      avatar: n.avatar || '',
+      ultimate: top ? reason(top[0]).ultimate : '',
+      color: top ? reason(top[0]).color : '',
+      count: stats.count,
+      guilty: stats.guilty,
+      weight: stats.weight,
+      lastAt: Math.max(0, ...items.filter((i) => i.nicknameId === n.id).map((i) => i.createdAt)),
+    };
+  });
+  res.json({
+    reasons: REASONS,
+    nicknames: players,
+    leaderboard: players.slice().sort((a, b) => b.weight - a.weight || b.count - a.count).slice(0, 10),
+    ticker: items
+      .slice()
+      .sort((a, b) => b.createdAt - a.createdAt)
+      .slice(0, 12)
+      .map((i) => ({ nickname: i.nickname, ultimate: i.ultimate, color: i.color, verdict: i.verdict })),
+    totals: { players: players.length, plates: items.length, guilty: items.filter((i) => i.verdict === 'guilty').length, comments: db.comments.length },
   });
 });
 
@@ -80,7 +131,7 @@ router.get('/nicknames/:id/items', (req, res) => {
     .filter((i) => i.nicknameId === nick.id)
     .sort((a, b) => (a.order - b.order) || (b.createdAt - a.createdAt))
     .map((i) => publicItem(i, req.hostname));
-  res.json({ nickname: { id: nick.id, name: nick.name, about: nick.about || '' }, items });
+  res.json({ nickname: { id: nick.id, name: nick.name, about: nick.about || '', avatar: nick.avatar || '' }, items });
 });
 
 router.get('/search', (req, res) => {
@@ -154,14 +205,36 @@ router.post('/submissions', guard(5, 3600_000, 'submit'), (req, res) => {
   const nickname = text(req.body.nickname, 32);
   const url = text(req.body.videoUrl, 300);
   const title = text(req.body.title, 120);
-  const note = multiline(req.body.note, 300);
+  const note = multiline(req.body.note, 500);
+  const reasonKey = text(req.body.reason, 16);
   if (nickname.length < 2) return fail(res, 400, 'Укажи ник (от 2 символов)');
-  if (resolve(url, req.hostname).kind === 'none') return fail(res, 400, 'Ссылка не распознана или не https');
-  const submission = { id: uid('s_'), nickname, title, url, note, status: 'pending', createdAt: now() };
+  if (note.length < 12) return fail(res, 400, 'Опиши, что именно произошло — минимум 12 символов');
+  const kind = resolve(url, req.hostname).kind;
+  // «link» — просто внешняя страница: для жалобы это не доказательство
+  if (kind === 'none' || kind === 'link') return fail(res, 400, 'Видео-доказательство обязательно: ссылка не распознана');
+  const submission = { id: uid('s_'), nickname, title, url, note, reason: REASONS[reasonKey] ? reasonKey : 'sus', status: 'pending', createdAt: now() };
   db.submissions.push(submission);
   save();
   broadcast('submission', { submission });
-  res.json({ ok: true, message: 'Предложение отправлено на модерацию' });
+  res.json({ ok: true, message: 'Жалоба принята — на модерации трибунала' });
+});
+
+router.post('/items/:id/vote', guard(12, 60_000, 'vote'), (req, res) => {
+  const item = byId(db.items, req.params.id);
+  if (!item || item.hidden) return fail(res, 404, 'Плашка не найдена');
+  const author = text(req.body.author, 32);
+  const value = req.body.value === 'innocent' ? 'innocent' : req.body.value === 'guilty' ? 'guilty' : null;
+  if (author.length < 2) return fail(res, 400, 'Введи ник');
+  if (!value) return fail(res, 400, 'Вердикт: guilty | innocent');
+  item.votes = item.votes || [];
+  const key = author.toLocaleLowerCase('ru');
+  const existing = item.votes.find((v) => v.by.toLocaleLowerCase('ru') === key);
+  if (existing && existing.value === value) return fail(res, 409, 'Ты уже проголосовал за это');
+  if (existing) existing.value = value;
+  else item.votes.push({ by: author, value, at: now() });
+  save();
+  broadcast('vote', { itemId: item.id, item: publicItem(item, req.hostname) });
+  res.json({ guilty: item.votes.filter((v) => v.value === 'guilty').length, innocent: item.votes.filter((v) => v.value === 'innocent').length, verdict: verdictOf(item) });
 });
 
 router.get('/video-preview', (req, res) => {
@@ -197,6 +270,7 @@ admin.use(requireStaff);
 
 admin.get('/overview', (req, res) => {
   res.json({
+    reasons: REASONS,
     nicknames: db.nicknames.slice().sort((a, b) => a.name.localeCompare(b.name, 'ru')),
     items: db.items.map((i) => publicItem(i, req.hostname)),
     submissions: db.submissions.slice().sort((a, b) => b.createdAt - a.createdAt).slice(0, 200),
@@ -213,7 +287,7 @@ admin.post('/nicknames', (req, res) => {
   if (db.nicknames.some((n) => n.name.toLocaleLowerCase('ru') === name.toLocaleLowerCase('ru'))) {
     return fail(res, 409, 'Такой ник уже есть');
   }
-  const nickname = { id: uid('n_'), name, about: text(req.body.about, 160), order: db.nicknames.length, hidden: false };
+  const nickname = { id: uid('n_'), name, about: text(req.body.about, 160), avatar: imageUrl(req.body.avatar), order: db.nicknames.length, hidden: false };
   db.nicknames.push(nickname);
   save();
   broadcast('nicknames', {});
@@ -229,6 +303,7 @@ admin.patch('/nicknames/:id', (req, res) => {
     nick.name = name;
   }
   if (req.body.about != null) nick.about = text(req.body.about, 160);
+  if (req.body.avatar != null) nick.avatar = imageUrl(req.body.avatar);
   if (req.body.order != null) nick.order = Number(req.body.order) || 0;
   if (req.body.hidden != null) nick.hidden = !!req.body.hidden;
   save();
@@ -259,10 +334,13 @@ admin.post('/items', (req, res) => {
     nicknameId,
     title,
     url,
+    reason: REASONS[text(req.body.reason, 16)] ? text(req.body.reason, 16) : 'sus',
+    description: multiline(req.body.description, 500),
     tags: String(req.body.tags || '').split(',').map((t) => text(t, 24)).filter(Boolean),
     order: db.items.length,
     hidden: false,
     createdAt: now(),
+    votes: [],
   };
   db.items.push(item);
   save();
@@ -279,6 +357,8 @@ admin.patch('/items/:id', (req, res) => {
     item.url = url;
   }
   if (req.body.title != null) item.title = text(req.body.title, 120);
+  if (req.body.reason != null && REASONS[text(req.body.reason, 16)]) item.reason = text(req.body.reason, 16);
+  if (req.body.description != null) item.description = multiline(req.body.description, 500);
   if (req.body.tags != null) item.tags = String(req.body.tags).split(',').map((t) => text(t, 24)).filter(Boolean);
   if (req.body.nicknameId != null && byId(db.nicknames, req.body.nicknameId)) item.nicknameId = req.body.nicknameId;
   if (req.body.order != null) item.order = Number(req.body.order) || 0;
@@ -308,7 +388,7 @@ admin.patch('/submissions/:id', (req, res) => {
       nick = { id: uid('n_'), name: submission.nickname, about: '', order: db.nicknames.length, hidden: false };
       db.nicknames.push(nick);
     }
-    const item = { id: uid('i_'), nicknameId: nick.id, title: submission.title || submission.nickname, url: submission.url, tags: [], order: db.items.length, hidden: false, createdAt: now() };
+    const item = { id: uid('i_'), nicknameId: nick.id, title: submission.title || submission.nickname, url: submission.url, reason: submission.reason || 'sus', description: submission.note || '', tags: [], order: db.items.length, hidden: false, createdAt: now(), votes: [] };
     db.items.push(item);
     submission.status = 'approved';
     broadcast('items', {});

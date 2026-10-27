@@ -12,6 +12,28 @@ const events = require('./src/events');
 store.load();
 auth.seedAdmin();
 
+// Пустая доска выглядит сломанной, поэтому при первом запуске кладём одну
+// демо-плашку. Отключить: SEED_DEMO=0. Удалить её можно в /admin.
+if (process.env.SEED_DEMO !== '0' && !store.db.nicknames.length && !store.db.items.length) {
+  const bear = { id: store.uid('n_'), name: 'Монокума', about: 'Ультимативный медведь', avatar: '', order: 0, hidden: false };
+  store.db.nicknames.push(bear);
+  store.db.items.push({
+    id: store.uid('i_'),
+    nicknameId: bear.id,
+    title: 'Демо-дело: так выглядит плашка',
+    url: 'https://www.youtube.com/watch?v=jNQXAC9IVRw',
+    reason: 'troll',
+    description: 'Тестовая запись, чтобы посмотреть оформление. Удали её в панели трибунала.',
+    tags: ['демо'],
+    order: 0,
+    hidden: false,
+    createdAt: Date.now(),
+    votes: [],
+  });
+  store.saveSync();
+  console.log('[seed] добавлена демо-плашка «Монокума» (удаляется в /admin)');
+}
+
 const app = express();
 // Botkeep не пробрасывает PORT в контейнер: приложение обязано слушать выданный
 // серверу порт (Overview → Port). Сменился порт — править значение здесь или в Startup.
